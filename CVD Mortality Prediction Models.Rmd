@@ -1,0 +1,1045 @@
+---
+title: "CVD Mortality Prediction Analysis"
+author: "Sam Fansler"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(survival)
+library(survminer)
+library(prodlim)
+library(pec)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(glmnet)
+library(randomForestSRC)
+library(ranger)
+library(gtsummary)
+library(forcats)
+library(webshot)
+library(formattable)
+library(reshape2)
+library(nricens)
+```
+
+# Framingham Categories: Baseline
+```{r}
+
+#Risk scores for men (From Figure 4 of 1998 paper)
+fram_train_men = train %>%
+  filter(male == 1) %>%
+  select(age, lbxtc, hdl, sbp, currentsmk, dm, male, time, cvd_death) %>%
+  mutate("age_cat" = ifelse(age >= 40 & age <= 44, 0, 
+                            ifelse(age >=45 & age <=49, 3,
+                                   ifelse(age >= 50 & age <= 54, 6,
+                                          ifelse(age >= 55 & age <= 59, 7,
+                                                 8)))),
+         "tc_cat" = ifelse(lbxtc < 160, -2,
+                           ifelse(lbxtc >= 160 & lbxtc <= 199, 0,
+                                  ifelse(lbxtc >= 200 & lbxtc <= 239, 1,
+                                         ifelse(lbxtc >= 240 & lbxtc <= 279, 1,
+                                                3)))),
+         "hdl_cat" = ifelse(hdl < 35, 5,
+                            ifelse(hdl >=35 & hdl <= 44, 2,
+                                   ifelse(hdl >= 45 & hdl <= 49, 1,
+                                          ifelse(hdl >= 50 & hdl <= 59, 0,
+                                                 -3)))),
+         "sbp_cat" = ifelse(sbp < 120, -3,
+                            ifelse(sbp >=120 & sbp <=139, 0,
+                                   ifelse(sbp >= 140 & sbp <= 159, 2,
+                                          3))),
+         "currentsmk_cat" = ifelse(currentsmk == 1, 2, 0),
+         "dm_cat" = ifelse(dm == 1, 4, 0)) %>%
+  rownames_to_column() %>%
+  group_by(rowname) %>%
+  mutate("score" = sum(age_cat, tc_cat, hdl_cat, sbp_cat, currentsmk_cat, dm_cat))
+
+
+#Risk scores for women (from Figure 3 of 1998 paper)
+fram_train_women = train %>%
+  filter(male == 0) %>%
+  select(age, lbxtc, hdl, sbp, currentsmk, dm, male, time, cvd_death) %>%
+  mutate("age_cat" = ifelse(age >= 40 & age <= 44, 1, 
+                            ifelse(age >=45 & age <=49, 2,
+                                   ifelse(age >= 50 & age <= 54, 3,
+                                          ifelse(age >= 55 & age <= 59, 4,
+                                                 ifelse(age >= 60 & age <= 64, 5,
+                                                        ifelse(age >= 65 & age <= 69, 6,
+                                                               7)))))),
+         "tc_cat" = ifelse(lbxtc < 160, -3,
+                           ifelse(lbxtc >= 160 & lbxtc <= 199, 0,
+                                  ifelse(lbxtc >= 200 & lbxtc <= 239, 1,
+                                         ifelse(lbxtc >= 240 & lbxtc <= 279, 2,
+                                                3)))),
+         "hdl_cat" = ifelse(hdl < 35, 2,
+                            ifelse(hdl >=35 & hdl <= 44, 1,
+                                   ifelse(hdl >= 45 & hdl <= 49, 0,
+                                          ifelse(hdl >= 50 & hdl <= 59, 0,
+                                                 -2)))),
+         "sbp_cat" = ifelse(sbp < 120, 0,
+                            ifelse(sbp >=120 & sbp <=129, 0,
+                                   ifelse(sbp >=130 & sbp <= 139, 1,
+                                          ifelse(sbp >= 140 & sbp <= 159, 2,
+                                          3)))),
+         "currentsmk_cat" = ifelse(currentsmk == 1, 2, 0),
+         "dm_cat" = ifelse(dm == 1, 2, 0)) %>%
+  rownames_to_column() %>%
+  group_by(rowname) %>%
+  mutate("score" = sum(age_cat, tc_cat, hdl_cat, sbp_cat, currentsmk_cat, dm_cat))
+
+
+fram_test_men = test %>%
+  filter(male == 1) %>%
+  select(age, lbxtc, hdl, sbp, currentsmk, dm, male, time, cvd_death) %>%
+  mutate("age_cat" = ifelse(age >= 40 & age <= 44, 0, 
+                            ifelse(age >=45 & age <=49, 3,
+                                   ifelse(age >= 50 & age <= 54, 6,
+                                          ifelse(age >= 55 & age <= 59, 7,
+                                                 8)))),
+         "tc_cat" = ifelse(lbxtc < 160, -2,
+                           ifelse(lbxtc >= 160 & lbxtc <= 199, 0,
+                                  ifelse(lbxtc >= 200 & lbxtc <= 239, 1,
+                                         ifelse(lbxtc >= 240 & lbxtc <= 279, 1,
+                                                3)))),
+         "hdl_cat" = ifelse(hdl < 35, 5,
+                            ifelse(hdl >=35 & hdl <= 44, 2,
+                                   ifelse(hdl >= 45 & hdl <= 49, 1,
+                                          ifelse(hdl >= 50 & hdl <= 59, 0,
+                                                 -3)))),
+         "sbp_cat" = ifelse(sbp < 120, -3,
+                            ifelse(sbp >=120 & sbp <=139, 0,
+                                   ifelse(sbp >= 140 & sbp <= 159, 2,
+                                          3))),
+         "currentsmk_cat" = ifelse(currentsmk == 1, 2, 0),
+         "dm_cat" = ifelse(dm == 1, 4, 0)) %>%
+  rownames_to_column() %>%
+  group_by(rowname) %>%
+  mutate("score" = sum(age_cat, tc_cat, hdl_cat, sbp_cat, currentsmk_cat, dm_cat))
+
+
+fram_test_women = test %>%
+  filter(male == 0) %>%
+  select(age, lbxtc, hdl, sbp, currentsmk, dm, male, time, cvd_death) %>%
+  mutate("age_cat" = ifelse(age >= 40 & age <= 44, 1, 
+                            ifelse(age >=45 & age <=49, 2,
+                                   ifelse(age >= 50 & age <= 54, 3,
+                                          ifelse(age >= 55 & age <= 59, 4,
+                                                 ifelse(age >= 60 & age <= 64, 5,
+                                                        ifelse(age >= 65 & age <= 69, 6,
+                                                               7)))))),
+         "tc_cat" = ifelse(lbxtc < 160, -3,
+                           ifelse(lbxtc >= 160 & lbxtc <= 199, 0,
+                                  ifelse(lbxtc >= 200 & lbxtc <= 239, 1,
+                                         ifelse(lbxtc >= 240 & lbxtc <= 279, 2,
+                                                3)))),
+         "hdl_cat" = ifelse(hdl < 35, 2,
+                            ifelse(hdl >=35 & hdl <= 44, 1,
+                                   ifelse(hdl >= 45 & hdl <= 49, 0,
+                                          ifelse(hdl >= 50 & hdl <= 59, 0,
+                                                 -2)))),
+         "sbp_cat" = ifelse(sbp < 120, 0,
+                            ifelse(sbp >=120 & sbp <=129, 0,
+                                   ifelse(sbp >=130 & sbp <= 139, 1,
+                                          ifelse(sbp >= 140 & sbp <= 159, 2,
+                                          3)))),
+         "currentsmk_cat" = ifelse(currentsmk == 1, 2, 0),
+         "dm_cat" = ifelse(dm == 1, 2, 0)) %>%
+  rownames_to_column() %>%
+  group_by(rowname) %>%
+  mutate("score" = sum(age_cat, tc_cat, hdl_cat, sbp_cat, currentsmk_cat, dm_cat))
+
+
+
+#Creating models
+
+fram_cox_men = coxph(Surv(time, cvd_death) ~ score, x = T, data = fram_train_men)
+summary(fram_cox_men)
+
+fram_cox_women = coxph(Surv(time, cvd_death) ~ score, x = T, data = fram_train_women)
+summary(fram_cox_women)
+
+#Getting c-index for men
+cindex_men = cindex(fram_cox_men, Surv(time, cvd_death) ~ score, data = fram_test_men)
+cindex_men$AppCindex #0.7526
+
+cindex_women = cindex(fram_cox_women, Surv(time, cvd_death) ~ score, data = fram_test_women)
+cindex_women$AppCindex #0.7300
+
+```
+
+
+# Cox Proportional Hazards Model
+
+## Traditional Variables
+
+```{r}
+
+#CVD Death
+##Training the model using only the traditional CVD risk factors
+
+CPHM_traditional_cvddeath=coxph(Surv(time, cvd_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm, data=train, x=T)
+
+summary(CPHM_traditional_cvddeath)
+
+
+tbl_regression(CPHM_traditional_cvddeath, exponentiate = T, pvalue_fun = ~style_pvalue(.x, digits = 2),) %>% 
+  bold_p(t=0.05) %>%
+  modify_footnote(everything() ~ NA, abbreviation = TRUE)
+
+#Survival Curve for survival probability over time
+ggsurvplot(survfit(CPHM_traditional_cvddeath), data=train, legend="none", break.y.by=0.05, ylim=c(0.9, 1)) + labs(x = "Time (Years)")
+
+
+#Calculating C-index
+c1=cindex(CPHM_traditional_cvddeath, Surv(time, cvd_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm, data=test)
+
+
+cindex_CPHM_trad=unname(unlist(c1$AppCindex))
+
+
+# #All death
+# CPHM_traditional_alldeath=coxph(Surv(time, all_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm, data=train, x=T)
+# 
+# summary(CPHM_traditional_alldeath)
+# 
+# tbl_regression(CPHM_traditional_alldeath, exponentiate = T, pvalue_fun = ~style_pvalue(.x, digits = 2),) %>% 
+#   bold_p(t=0.05) %>%
+#   modify_footnote(everything() ~ NA, abbreviation = TRUE)
+
+```
+
+## Including Metals
+
+```{r}
+###Training the model using traditional risk factors + metals
+
+#Just main effects
+CPHM_metals_cvddeath_main=coxph(Surv(time, cvd_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas + urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab+ urxucr, data=train, x=T)
+
+summary(CPHM_metals_cvddeath_main)
+
+ggsurvplot(survfit(CPHM_metals_cvddeath_main), data=train, break.y.by=0.05, ylim=c(0.9, 1))
+
+
+tbl_regression(CPHM_metals_cvddeath_main, exponentiate = T, pvalue_fun = ~style_pvalue(.x, digits = 2),) %>% 
+  bold_p(t=0.05) %>%
+  modify_footnote(everything() ~ NA, abbreviation = TRUE)
+
+#Calculating C-index
+cindex_CPHM_metals_main=cindex(CPHM_metals_cvddeath_main, Surv(time, cvd_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas + urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr, data=test)
+
+
+cindex_CPHM_metals_main=unname(unlist(cindex_CPHM_metals_main$AppCindex))
+
+
+#With squared and interaction terms
+CPHM_metals_cvddeath_int=coxph(Surv(time, cvd_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + bmi + hypertension + dm + urxucs + urxucs^2 + urxumo + urxumo^2 + lbxbpb + lbxbpb^2 + urxutl + urxutl^2 + urxuas + urxuas^2 + urxuco + urxuco^2 + urxuba + urxuba^2 + urxupb + urxupb^2 + urxucd + urxucd^2 + lbxthg + lbxthg^2 + urxuhg + urxuhg^2 + lbxbcd + lbxbcd^2 + urxuur + urxuur^2 + urxudma + urxudma^2 + urxutu + urxutu^2 + urxusb + urxusb^2 + urxuab + urxuab^2 + urxucr + urxucr^2 + (urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr)^2  - lbxbpb:urxucr - lbxthg:urxucr - lbxbcd:urxucr, data=train, x=T)
+
+summary(CPHM_metals_cvddeath_int)
+
+#Calculating C-index
+cindex_CPHM_metals_int=cindex(CPHM_metals_cvddeath_int, Surv(time, cvd_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm + urxucs + urxucs^2 + urxumo + urxumo^2 + lbxbpb + lbxbpb^2 + urxutl + urxutl^2 + urxuas + urxuas^2 + urxuco + urxuco^2 + urxuba + urxuba^2 + urxupb + urxupb^2 + urxucd + urxucd^2 + lbxthg + lbxthg^2 + urxuhg + urxuhg^2 + lbxbcd + lbxbcd^2 + urxuur + urxuur^2 + urxudma + urxudma^2 + urxutu + urxutu^2 + urxusb + urxusb^2 + urxuab + urxuab^2 + urxucr + urxucr^2 + (urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr)^2 - lbxbpb:urxucr - lbxthg:urxucr - lbxbcd:urxucr, data=test)
+
+
+cindex_CPHM_metals_int=unname(unlist(cindex_CPHM_metals_int$AppCindex))
+```
+
+## Comparison Table
+```{r}
+comparison_CPHM=matrix(nrow=3, ncol=1)
+comparison_CPHM[1,]=cindex_CPHM_trad
+comparison_CPHM[2,]=cindex_CPHM_metals_main
+comparison_CPHM[3,]=cindex_CPHM_metals_int
+
+colnames(comparison_CPHM)=c("C-index")
+rownames(comparison_CPHM)=c("Traditional Vars", "All Vars (main effects)", "All Vars (with squared and interaction)")
+
+comparison_CPHM
+```
+
+
+## Individual associations with traditional vars
+
+```{r}
+
+cox_age_cvd=coxph(Surv(time, cvd_death) ~ age, data=train, x=T)
+
+summary(cox_age_cvd)
+
+cox_race_cvd=coxph(Surv(time, cvd_death) ~ black + hispanic, data=train, x=T)
+
+summary(cox_race_cvd)
+
+cox_sex_cvd=coxph(Surv(time, cvd_death) ~ male, data=train, x=T)
+
+summary(cox_sex_cvd)
+
+cox_smoke_cvd=coxph(Surv(time, cvd_death) ~ currentsmk, data=train, x=T)
+
+summary(cox_smoke_cvd)
+
+cox_sbp_cvd=coxph(Surv(time, cvd_death) ~ sbp, data=train, x=T)
+
+summary(cox_sbp_cvd)
+
+cox_totchol_cvd=coxph(Surv(time, cvd_death) ~ lbxtc, data=train, x=T)
+
+cox_hdl_cvd=coxph(Surv(time, cvd_death) ~ hdl, data=train, x=T)
+
+summary(cox_hdl_cvd)
+
+cox_bmi_cvd=coxph(Surv(time, cvd_death) ~ overweight + obese, data=train, x=T)
+
+summary(cox_bmi_cvd)
+
+cox_hypertension_cvd=coxph(Surv(time, cvd_death) ~ hypertension, data=train, x=T)
+
+summary(cox_hypertension_cvd)
+
+cox_diabetes_cvd=coxph(Surv(time, cvd_death) ~ dm, data=train, x=T)
+
+summary(cox_diabetes_cvd)
+
+#Metals
+
+cox_ucs_cvd=coxph(Surv(time, cvd_death) ~ urxucs, data=train, x=T)
+
+summary(cox_ucs_cvd)
+
+cox_umo_cvd=coxph(Surv(time, cvd_death) ~ urxumo, data=train, x=T)
+
+summary(cox_umo_cvd)
+
+cox_bpb_cvd=coxph(Surv(time, cvd_death) ~ lbxbpb, data=train, x=T)
+
+summary(cox_sex_cvd)
+
+cox_utl_cvd=coxph(Surv(time, cvd_death) ~ urxutl, data=train, x=T)
+
+summary(cox_utl_cvd)
+
+cox_uas_cvd=coxph(Surv(time, cvd_death) ~ urxuas, data=train, x=T)
+
+summary(cox_uas_cvd)
+
+cox_uco_cvd=coxph(Surv(time, cvd_death) ~ urxuco, data=train, x=T)
+
+summary(cox_uco_cvd)
+
+cox_uba_cvd=coxph(Surv(time, cvd_death) ~ urxuba, data=train, x=T)
+
+summary(cox_uba_cvd)
+
+cox_upb_cvd=coxph(Surv(time, cvd_death) ~ urxupb, data=train, x=T)
+
+summary(cox_upb_cvd)
+
+cox_ucd_cvd=coxph(Surv(time, cvd_death) ~ urxucd, data=train, x=T)
+
+summary(cox_ucd_cvd)
+
+cox_thg_cvd=coxph(Surv(time, cvd_death) ~ lbxthg, data=train, x=T)
+
+summary(cox_thg_cvd)
+
+cox_uhg_cvd=coxph(Surv(time, cvd_death) ~ urxuhg, data=train, x=T)
+
+summary(cox_uhg_cvd)
+
+cox_bcd_cvd=coxph(Surv(time, cvd_death) ~ lbxbcd, data=train, x=T)
+
+summary(cox_bcd_cvd)
+
+cox_uur_cvd=coxph(Surv(time, cvd_death) ~ urxuur, data=train, x=T)
+
+summary(cox_uur_cvd)
+
+cox_udma_cvd=coxph(Surv(time, cvd_death) ~ urxudma, data=train, x=T)
+
+summary(cox_udma_cvd)
+
+cox_utu_cvd=coxph(Surv(time, cvd_death) ~ urxutu, data=train, x=T)
+
+summary(cox_utu_cvd)
+
+cox_usb_cvd=coxph(Surv(time, cvd_death) ~ urxusb, data=train, x=T)
+
+summary(cox_usb_cvd)
+
+cox_uab_cvd=coxph(Surv(time, cvd_death) ~ urxuab, data=train, x=T)
+
+summary(cox_uab_cvd)
+
+```
+
+
+
+### Table
+```{r}
+HR_cvd=round(exp(c(cox_age_cvd$coefficients, cox_race_cvd$coefficients, cox_sex_cvd$coefficients, cox_smoke_cvd$coefficients, cox_sbp_cvd$coefficients, cox_totchol_cvd$coefficients, cox_hdl_cvd$coefficients, cox_bmi_cvd$coefficients, cox_hypertension_cvd$coefficients, cox_diabetes_cvd$coefficients)), 2)
+
+
+Std_Err_cvd=round(c(summary(cox_age_cvd)$coefficients[3], unname(summary(cox_race_cvd)$coefficients[,3]), summary(cox_sex_cvd)$coefficients[3], summary(cox_smoke_cvd)$coefficients[3], summary(cox_sbp_cvd)$coefficients[3], summary(cox_totchol_cvd)$coefficients[3], summary(cox_hdl_cvd)$coefficients[3], summary(cox_bmi_cvd)$coefficients[,3], summary(cox_hypertension_cvd)$coefficients[3], summary(cox_diabetes_cvd)$coefficients[3]), 2)
+
+confint_lb=round(c(summary(cox_age_cvd)$conf.int[3], unname(summary(cox_race_cvd)$conf.int[,3]), summary(cox_sex_cvd)$conf.int[3], summary(cox_smoke_cvd)$conf.int[3], summary(cox_sbp_cvd)$conf.int[3], summary(cox_totchol_cvd)$conf.int[3], summary(cox_hdl_cvd)$conf.int[3], unname(summary(cox_bmi_cvd)$conf.int[,3]), summary(cox_hypertension_cvd)$conf.int[3], summary(cox_diabetes_cvd)$conf.int[3]), 2)
+
+confint_ub=round(c(summary(cox_age_cvd)$conf.int[4], unname(summary(cox_race_cvd)$conf.int[,4]), summary(cox_sex_cvd)$conf.int[4], summary(cox_smoke_cvd)$conf.int[4], summary(cox_sbp_cvd)$conf.int[4], summary(cox_totchol_cvd)$conf.int[4], summary(cox_hdl_cvd)$conf.int[4], unname(summary(cox_bmi_cvd)$conf.int[,4]), summary(cox_hypertension_cvd)$conf.int[4], summary(cox_diabetes_cvd)$conf.int[4]), 2)
+
+p_vals_cvd=round(c(summary(cox_age_cvd)$coefficients[5], unname(summary(cox_race_cvd)$coefficients[,5]), summary(cox_sex_cvd)$coefficients[5], summary(cox_smoke_cvd)$coefficients[5], summary(cox_sbp_cvd)$coefficients[5], summary(cox_totchol_cvd)$coefficients[5], summary(cox_hdl_cvd)$coefficients[5], summary(cox_bmi_cvd)$coefficients[,5], summary(cox_hypertension_cvd)$coefficients[5], summary(cox_diabetes_cvd)$coefficients[5]), 3)
+
+df_cvd=data.frame(HR_cvd, paste(confint_lb, ", ", confint_ub, sep=""), p_vals_cvd)
+
+colnames(df_cvd)=c("HR", "95% CI", "p-value")
+
+formattable(df_cvd,
+    align=c("c", "c", "c"),
+    list('p-value' = formatter(
+      "span", style = x~style(font.weight=ifelse(x<0.05, "bold", "normal")))
+    )
+)
+
+
+#Metals
+
+
+HR_metals=round(exp(c(cox_ucs_cvd$coefficients, cox_umo_cvd$coefficients, cox_bpb_cvd$coefficients, cox_utl_cvd$coefficients, cox_uas_cvd$coefficients, cox_uco_cvd$coefficients, cox_uba_cvd$coefficients, cox_upb_cvd$coefficients, cox_ucd_cvd$coefficients, cox_thg_cvd$coefficients, cox_uhg_cvd$coefficients, cox_bcd_cvd$coefficients, cox_uur_cvd$coefficients, cox_udma_cvd$coefficients, cox_utu_cvd$coefficients, cox_usb_cvd$coefficients, cox_uab_cvd$coefficients)), 2)
+
+Std_Err_metals=round(c(summary(cox_ucs_cvd)$coefficients[3], unname(summary(cox_umo_cvd)$coefficients[3]), summary(cox_bpb_cvd)$coefficients[3], summary(cox_utl_cvd)$coefficients[3], summary(cox_uas_cvd)$coefficients[3], summary(cox_uco_cvd)$coefficients[3], summary(cox_uba_cvd)$coefficients[3], summary(cox_upb_cvd)$coefficients[3], summary(cox_ucd_cvd)$coefficients[3], summary(cox_thg_cvd)$coefficients[3], summary(cox_uhg_cvd)$coefficients[3], summary(cox_bcd_cvd)$coefficients[3], summary(cox_uur_cvd)$coefficients[3], summary(cox_udma_cvd)$coefficients[3], summary(cox_utu_cvd)$coefficients[3], summary(cox_usb_cvd)$coefficients[3], summary(cox_uab_cvd)$coefficients[3]), 2)
+
+confint_lb_metals=round(c(summary(cox_ucs_cvd)$conf.int[3], unname(summary(cox_umo_cvd)$conf.int[3]), summary(cox_bpb_cvd)$conf.int[3], summary(cox_utl_cvd)$conf.int[3], summary(cox_uas_cvd)$conf.int[3], summary(cox_uco_cvd)$conf.int[3], summary(cox_uba_cvd)$conf.int[3], unname(summary(cox_upb_cvd)$conf.int[3]), summary(cox_ucd_cvd)$conf.int[3], summary(cox_thg_cvd)$conf.int[3], summary(cox_uhg_cvd)$conf.int[3], summary(cox_bcd_cvd)$conf.int[3], summary(cox_uur_cvd)$conf.int[3], summary(cox_udma_cvd)$conf.int[3], unname(summary(cox_utu_cvd)$conf.int[3]), summary(cox_usb_cvd)$conf.int[3], summary(cox_uab_cvd)$conf.int[3]), 2)
+
+confint_ub_metals=round(c(summary(cox_ucs_cvd)$conf.int[4], unname(summary(cox_umo_cvd)$conf.int[4]), summary(cox_bpb_cvd)$conf.int[4], summary(cox_utl_cvd)$conf.int[4], summary(cox_uas_cvd)$conf.int[4], summary(cox_uco_cvd)$conf.int[4], summary(cox_uba_cvd)$conf.int[4], unname(summary(cox_upb_cvd)$conf.int[4]), summary(cox_ucd_cvd)$conf.int[4], summary(cox_thg_cvd)$conf.int[4], summary(cox_uhg_cvd)$conf.int[4], summary(cox_bcd_cvd)$conf.int[4], summary(cox_uur_cvd)$conf.int[4], summary(cox_udma_cvd)$conf.int[4], unname(summary(cox_utu_cvd)$conf.int[4]), summary(cox_usb_cvd)$conf.int[4], summary(cox_uab_cvd)$conf.int[4]), 2)
+
+p_vals_metals=round(c(summary(cox_ucs_cvd)$coefficients[5], unname(summary(cox_umo_cvd)$coefficients[5]), summary(cox_bpb_cvd)$coefficients[5], summary(cox_utl_cvd)$coefficients[5], summary(cox_uas_cvd)$coefficients[5], summary(cox_uco_cvd)$coefficients[5], summary(cox_uba_cvd)$coefficients[5], summary(cox_upb_cvd)$coefficients[5], summary(cox_ucd_cvd)$coefficients[5], summary(cox_thg_cvd)$coefficients[5], summary(cox_uhg_cvd)$coefficients[5], summary(cox_bcd_cvd)$coefficients[5], summary(cox_uur_cvd)$coefficients[5], summary(cox_udma_cvd)$coefficients[5], summary(cox_utu_cvd)$coefficients[5], summary(cox_usb_cvd)$coefficients[5], summary(cox_uab_cvd)$coefficients[5]), 3)
+
+
+
+df_metals=data.frame(HR_metals, paste(confint_lb_metals, ", ", confint_ub_metals, sep=""), p_vals_metals)
+
+colnames(df_metals)=c("HR", "95% CI", "p-value")
+
+formattable(df_metals,
+    align=c("c", "c", "c"),
+    list('p-value' = formatter(
+      "span", style = x~style(font.weight=ifelse(x<0.05, "bold", "normal")))
+    )
+)
+
+```
+
+## NRI
+
+```{r}
+#Traditional only
+cox_survfit_trad<-survfit(CPHM_traditional_cvddeath,  newdata = test
+                          )
+cox_risk10_trad<-1-summary(cox_survfit_trad, times=10)$surv
+
+
+
+# Traditional + metals
+
+cox_survfit_trad_metals<-survfit(CPHM_metals_cvddeath_main,  newdata = test)
+cox_risk10_trad_metals<-1-summary(cox_survfit_trad_bl, times=10)$surv
+
+#NRI
+nri_cox_trad = nribin(event=test$cvd_death, p.std = cox_risk10_trad, p.new = cox_risk10_trad_metals, updown = "diff" , cut = .05)
+
+nri_cox_trad$nri
+
+# NRI=0.080
+
+#Continuous NRI
+
+cont_nri_cox_trad = nribin(event=test$cvd_death, p.std = cox_risk10_trad, p.new = cox_risk10_trad_metals, updown = "diff" , cut = 0) 
+
+cont_nri_cox_trad$nri
+
+# NRI=0.208
+
+
+#Traditional + metals + squared/interaction
+cox_survfit_trad_int<-survfit(CPHM_metals_cvddeath_int,  newdata = test)
+cox_risk10_trad_int<-1-summary(cox_survfit_trad_int, times=10)$surv
+
+#NRI
+nri_cox_int = nribin(event=test$cvd_death, p.std = cox_risk10_trad, p.new = cox_risk10_trad_int, updown = "diff" , cut = .05) 
+
+nri_cox_int$nri # NRI=0.071
+
+#Continuous NRI
+cont_nri_cox_int = nribin(event=test$cvd_death, p.std = cox_risk10_trad, p.new = cox_risk10_trad_int, updown = "diff" , cut = 0) 
+
+cont_nri_cox_int$nri # NRI=0.361
+
+```
+
+
+# Elastic Net
+
+## Pre-Processing
+
+```{r}
+###We need to change our data frames into matrices for the glmnet function
+train_x_traditional = train %>%
+  select(-c("all_death", "cvd_death", "time", metals$chemicals, "urxucr", "deathstat", "race", "bmi")) %>%
+  data.matrix()
+
+test_x_traditional = test %>%
+  select(-c("all_death", "cvd_death", "time", metals$chemicals, "urxucr", "deathstat", "race", "bmi")) %>%
+  data.matrix()
+
+
+train_x_metals_main = train %>%
+  select(-c("all_death", "cvd_death", "time", "deathstat", "race", "bmi")) %>%
+  data.matrix()
+
+test_x_metals_main=test %>%
+  select(-c("all_death", "cvd_death", "time", "deathstat", "race", "bmi")) %>%
+  data.matrix()
+
+#The y outcome matrices from training data. glmnet function requires time and outcome as the "y" argument
+y_cvd=train %>%
+  select(c("time", "cvd_death")) %>%
+  rename("status" = "cvd_death") %>%
+  data.matrix()
+
+
+
+#Chemicals
+chemicals <- c(metals$chemicals, "urxucr")
+
+
+chem_train=train[,chemicals]
+chem_test=test[,chemicals]
+
+
+#Create square terms of chemicals
+square_chem_train<-data.frame(matrix(0,nrow(chem_train),ncol(chem_train)))
+square_chem_test<-data.frame(matrix(0,nrow(chem_test),ncol(chem_test)))
+
+
+
+for(i in 1:ncol(chem_train)) {
+  square_chem_train[, i] <- chem_train[, i]^2
+  colnames(square_chem_train)[i] <- paste(colnames(chem_train)[i], "^2", sep = "")
+}
+
+names_chem_sq_train<-colnames(square_chem_train)
+
+
+for(i in 1:ncol(chem_test)) {
+  square_chem_test[, i] <- chem_test[, i]^2
+  colnames(square_chem_test)[i] <- paste(colnames(chem_test)[i], "^2", sep = "")
+}
+
+names_chem_sq_test<-colnames(square_chem_test)
+
+#Create pair-wise interaction
+pairs_chem_train <- data.frame(matrix(0, nrow(chem_train), choose(ncol(chem_train),2)))
+pairs_chem_test <- data.frame(matrix(0, nrow(chem_test), choose(ncol(chem_test),2)))
+
+k = 1
+for(i in 1:(ncol(chem_train)-1)) {
+  for(j in (i+1):ncol(chem_train)) {
+    pairs_chem_train[, k] <- chem_train[, i]*chem_train[, j]
+    colnames(pairs_chem_train)[k] <- paste(colnames(chem_train)[i], ".", colnames(chem_train)[j], sep = "")
+    k = k + 1
+  }
+}
+
+names_chem_int_train<-colnames(pairs_chem_train)
+
+k = 1
+for(i in 1:(ncol(chem_test)-1)) {
+  for(j in (i+1):ncol(chem_test)) {
+    pairs_chem_test[, k] <- chem_test[, i]*chem_test[, j]
+    colnames(pairs_chem_test)[k] <- paste(colnames(chem_test)[i], ".", colnames(chem_test)[j], sep = "")
+    k = k + 1
+  }
+}
+
+names_chem_int_test<-colnames(pairs_chem_test)
+
+
+train_x_metals_int=cbind(train_x_metals_main, square_chem_train, pairs_chem_train)
+
+train_x_metals_int=data.matrix(train_x_metals_int)
+
+test_x_metals_int=cbind(test_x_metals_main, square_chem_test, pairs_chem_test)
+
+test_x_metals_int=data.matrix(test_x_metals_int)
+```
+
+## Traditional Variables
+
+```{r}
+###Use cross-validation to select optimal lambda
+set.seed(56765)
+cv_cvd_trad=cv.glmnet(train_x_traditional, y_cvd, family="cox", type.measure = "C", penalty.factor=c(1, rep(0, 4), rep(1, 5), rep(0, 3), rep(1, 2)))
+plot(cv_cvd_trad)
+
+
+fit_cvd_trad=list()
+
+i=0
+for(j in 1:11){
+fit_cvd_trad[[j]]=glmnet(train_x_traditional, y_cvd, family="cox", alpha = i, lambda = 0.000510, penalty.factor=c(1, rep(0, 4), rep(1, 5), rep(0, 3), rep(1, 2)))
+i=i+0.1
+}
+
+###Predictions on Testing data
+
+testing_trad=test %>%
+  select(-c("all_death", "cvd_death", "time", metals$chemicals, "urxucr", "deathstat", "race", "bmi")) %>%
+  data.matrix()
+
+test_y_cvd=test %>%
+  select(c("time", "cvd_death")) %>%
+  rename("status" = "cvd_death") %>%
+  data.matrix()
+
+
+pred_cvd_trad=list()
+cindex_cvd_trad=list()
+cindex_cvd_trad_vec=vector()
+for(i in 1:11){
+pred_cvd_trad[[i]]=predict(fit_cvd_trad[[i]], newx = testing_trad, type="response", s = 0.000510)
+
+
+cindex_cvd_trad[[i]]=Cindex(pred_cvd_trad[[i]], test_y_cvd)
+
+
+cindex_cvd_trad_vec[i]=cindex_cvd_trad[[i]]
+}
+#Maximum c-index for each outcome
+
+cindex_enet_trad=max(cindex_cvd_trad_vec) #0.8279
+cindex_enet_trad
+
+#Variables selected for optimal model
+
+coef(fit_cvd_trad[[1]])
+```
+
+## Including Metals
+
+```{r}
+
+#Only main effects
+###Use cross-validation to select optimal lambda
+
+set.seed(56765)
+cv_cvd_metals_main=cv.glmnet(train_x_metals_main, y_cvd, family="cox", type.measure = "C", penalty.factor=c(rep(0, 15), rep(1, 18)))
+plot(cv_cvd_metals_main)
+
+
+fit_cvd_metals_main=list()
+
+i=0
+for(j in 1:11){
+  fit_cvd_metals_main[[j]]=glmnet(train_x_metals_main, y_cvd, family="cox", lambda=0.001734, penalty.factor=c(rep(0, 15), rep(1, 18)), alpha = i)
+i=i+0.1
+}
+
+
+###Predictions on Testing data
+
+
+
+pred_cvd_metals_main=list()
+cindex_cvd_metals_main=list()
+cindex_cvd_metals_vec_main=vector()
+for(i in 1:11){
+
+pred_cvd_metals_main[[i]]=predict(fit_cvd_metals_main[[i]], newx = test_x_metals_main, type="response", s=0.001734)
+
+
+cindex_cvd_metals_main[[i]]=Cindex(pred_cvd_metals_main[[i]], test_y_cvd)
+
+
+cindex_cvd_metals_vec_main[i]=cindex_cvd_metals_main[[i]]
+}
+
+#Maximum c-index for each outcome
+
+cindex_enet_metals_main=max(cindex_cvd_metals_vec_main) #0.8304 stand, 0.8320 not stand
+
+
+
+#Variables selected for optimal model
+
+coef(fit_cvd_metals_main[[11]])
+
+
+
+#Including squared and interaction terms
+
+#Exclude blood metals*urinary creatinine interactions
+
+train_x_metals_int=subset(train_x_metals_int, select=-c(lbxbpb.urxucr, lbxthg.urxucr, lbxbcd.urxucr))
+test_x_metals_int=subset(test_x_metals_int, select=-c(lbxbpb.urxucr, lbxthg.urxucr, lbxbcd.urxucr))
+
+###Use cross-validation to select optimal lambda
+
+set.seed(56765)
+cv_cvd_metals_int=cv.glmnet(train_x_metals_int, y_cvd, family="cox", type.measure = "C", penalty.factor=c(rep(0, 15), rep(1, 186)))
+plot(cv_cvd_metals_int)
+
+
+fit_cvd_metals_int=list()
+
+i=0
+for(j in 1:11){
+  fit_cvd_metals_int[[j]]=glmnet(train_x_metals_int, y_cvd, family="cox", lambda=0.004041, penalty.factor=c(rep(0, 15), rep(1, 186)), alpha = i)
+i=i+0.1
+}
+
+
+###Predictions on Testing data
+
+
+
+pred_cvd_metals_int=list()
+cindex_cvd_metals_int=list()
+cindex_cvd_metals_vec_int=vector()
+for(i in 1:11){
+
+pred_cvd_metals_int[[i]]=predict(fit_cvd_metals_int[[i]], newx = test_x_metals_int, type="response", s=0.004041)
+
+
+cindex_cvd_metals_int[[i]]=Cindex(pred_cvd_metals_int[[i]], test_y_cvd)
+
+
+cindex_cvd_metals_vec_int[i]=cindex_cvd_metals_int[[i]]
+}
+
+#Maximum c-index for each outcome
+
+cindex_enet_metals_int=max(cindex_cvd_metals_vec_int) #0.8322 stand, 0.8249 not stand
+
+
+
+#Variables selected for optimal model
+
+coef(fit_cvd_metals_int[[8]])
+
+```
+## Comparison Table
+
+```{r}
+
+comparison_enet=matrix(nrow=3, ncol=1)
+comparison_enet[1,]=c(cindex_enet_trad)
+comparison_enet[2,]=c(cindex_enet_metals_main)
+comparison_enet[3,]=c(cindex_enet_metals_int)
+
+
+colnames(comparison_enet)=c("C-index")
+rownames(comparison_enet)=c("Traditional Vars", "All Vars (main effects)", "All Vars (with squared and interaction)")
+comparison_enet
+
+```
+## NRI
+
+```{r, eval = F}
+#Traditional only
+enet_survfit_trad<-survfit(fit_cvd_trad[[1]], s = 0.000510, x = train_x_traditional, y = Surv(train$time, train$cvd_death), newx = test_x_traditional)
+
+
+enet_risk10_trad<-1-summary(enet_survfit_trad, times=10)$surv
+
+
+
+# Traditional + metals
+
+enet_survfit_trad_metals<-survfit(fit_cvd_metals_main[[11]],  s = 0.001734, x = train_x_metals_main, y = Surv(train$time, train$cvd_death), newx = test_x_metals_main)
+
+
+enet_risk10_trad_metals<-1-summary(enet_survfit_trad_metals, times=10)$surv
+
+#NRI
+nri_enet_metals = nribin(event=test$cvd_death, p.std = enet_risk10_trad, p.new = enet_risk10_trad_metals, updown = "diff" , cut = 0.05)
+nri_enet_metals$nri #NRI = 0.06
+
+#Continuous NRI
+cont_nri_enet_metals=nribin(event=test$cvd_death, p.std = enet_risk10_trad, p.new = enet_risk10_trad_metals, updown = "diff" , cut = 0)
+cont_nri_enet_metals$nri # NRI = 0.43
+
+
+#Traditional + metals + squared/interaction
+enet_survfit_metals_int<-survfit(fit_cvd_metals_int[[8]],  s = 0.004041, x = train_x_metals_int, y = Surv(train$time, train$cvd_death), newx = test_x_metals_int)
+
+enet_risk10_metals_int<-1-summary(enet_survfit_metals_int, times=10)$surv
+
+#NRI
+nri_enet_metals_int = nribin(event=test$cvd_death, p.std = enet_risk10_trad, p.new = enet_risk10_metals_int, updown = "diff" , cut = .05)
+nri_enet_metals_int$nri #NRI = 0.05
+
+#Continuous NRI
+cont_nri_enet_metals_int = nribin(event=test$cvd_death, p.std = enet_risk10_trad, p.new = enet_risk10_metals_int, updown = "diff" , cut = 0)
+cont_nri_enet_metals_int$nri #NRI = 0.35
+
+
+
+```
+
+
+# Random Forest
+
+## Traditional Variables
+
+```{r}
+#Start by tuning ntree hyperparameter
+
+rfcvdtrad_ntree=list()
+predrfcvdtrad_ntree=list()
+cindexcvdtrad_ntree=list()
+for(ntree in c(100, 250, 500, 750, 1000, 1250, 1500)){
+  index=toString(ntree)
+  set.seed(56765)
+  rfcvdtrad_ntree[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm, data=train, ntree=ntree)
+  
+  
+  predrfcvdtrad_ntree[[index]]=predict.rfsrc(rfcvdtrad_ntree[[index]], test)
+  
+  cindexcvdtrad_ntree[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdtrad_ntree[[index]]$predicted)
+}
+
+cindexcvdtrad_ntree=unlist(cindexcvdtrad_ntree)
+
+cindexcvdtrad_ntree
+
+
+#Since 250 trees has best performance, we will use that when experimenting with mtry (0.8328)
+rfcvdtrad_mtry=list()
+predrfcvdtrad_mtry=list()
+cindexcvdtrad_mtry=list()
+
+for(mtry in c(1:10)){
+  index=toString(mtry)
+  set.seed(56765)
+  rfcvdtrad_mtry[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm, data=train, ntree=250, mtry=mtry)
+  
+  
+  predrfcvdtrad_mtry[[index]]=predict.rfsrc(rfcvdtrad_mtry[[index]], test)
+  
+  cindexcvdtrad_mtry[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdtrad_mtry[[index]]$predicted)
+}
+
+cindexcvdtrad_mtry=unlist(cindexcvdtrad_mtry)
+
+cindexcvdtrad_mtry
+
+#5 is optimal (0.8329)
+
+###Now experimenting with nodesize using optimal ntree and mtry
+
+rfcvdtrad_nodesize=list()
+predrfcvdtrad_nodesize=list()
+cindexcvdtrad_nodesize=list()
+
+for(nodesize in c(1:25)){
+  index=toString(nodesize)
+  set.seed(56765)
+  rfcvdtrad_nodesize[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm, data=train, ntree=250, mtry=5, nodesize=nodesize)
+  
+  
+  predrfcvdtrad_nodesize[[index]]=predict.rfsrc(rfcvdtrad_nodesize[[index]], test)
+  
+  cindexcvdtrad_nodesize[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdtrad_nodesize[[index]]$predicted)
+  print(nodesize)
+}
+
+cindexcvdtrad_nodesize=unlist(cindexcvdtrad_nodesize)
+
+cindexcvdtrad_nodesize
+
+##24 is optimal (0.8345)
+
+#Finally, tuning nsplit
+
+rfcvdtrad_nsplit=list()
+predrfcvdtrad_nsplit=list()
+cindexcvdtrad_nsplit=list()
+
+for(nsplit in c(1:20)){
+  index=toString(nsplit)
+  set.seed(56765)
+  rfcvdtrad_nsplit[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm, data=train, ntree=250, mtry=5, nodesize=24, nsplit=nsplit)
+  
+  
+  predrfcvdtrad_nsplit[[index]]=predict.rfsrc(rfcvdtrad_nsplit[[index]], test)
+  
+  cindexcvdtrad_nsplit[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdtrad_nsplit[[index]]$predicted)
+}
+
+cindexcvdtrad_nsplit=unlist(cindexcvdtrad_nsplit)
+
+cindexcvdtrad_nsplit
+
+#Try nsplit=0?
+
+set.seed(56765)
+rfcvdtrad_nsplit0=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm, data=train, ntree=250, mtry=5, nodesize=23, nsplit=0)
+
+predrfcvdtrad_nsplit0=predict.rfsrc(rfcvdtrad_nsplit0, test)
+  
+cindexcvdtrad_nsplit0=1-get.cindex(test$time, test$cvd_death, predrfcvdtrad_nsplit0$predicted)
+
+cindexcvdtrad_nsplit0
+
+#5 is optimal (0.8353)
+
+#Now the hyperparameters have been tuned, let's create the optimal forest
+set.seed(56765)
+optimalrf_cvd_trad=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm, data=train, ntree=250, mtry=5, nodesize=24, nsplit=5)
+
+pred_optimalrf_cvd_trad=predict.rfsrc(optimalrf_cvd_trad, test)
+
+rf_cindex_cvd_trad=1-get.cindex(test$time, test$cvd_death, pred_optimalrf_cvd_trad$predicted)
+```
+
+## Including Metals
+
+```{r}
+
+#Start by tuning ntree
+rfcvdmetals_ntree=list()
+predrfcvdmetals_ntree=list()
+cindexcvdmetals_ntree=list()
+
+for(ntree in c(100, 250, 500, 750, 1000, 1250, 1500)){
+  index=toString(ntree)
+  set.seed(56765)
+  rfcvdmetals_ntree[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr, data=train, ntree=ntree)
+  
+  predrfcvdmetals_ntree[[index]]=predict.rfsrc(rfcvdmetals_ntree[[index]], test)
+  
+  cindexcvdmetals_ntree[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdmetals_ntree[[index]]$predicted)
+}
+
+cindexcvdmetals_ntree=unlist(cindexcvdmetals_ntree)
+
+cindexcvdmetals_ntree
+
+
+#Since 100 trees has best performance (0.8241), we will use that when experimenting with mtry
+rfcvdmetals_mtry=list()
+predrfcvdmetals_mtry=list()
+cindexcvdmetals_mtry=list()
+
+for(mtry in c(1:15)){
+  index=toString(mtry)
+  set.seed(56765)
+  rfcvdmetals_mtry[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr, data=train, ntree=100, mtry=mtry)
+  
+  
+  predrfcvdmetals_mtry[[index]]=predict.rfsrc(rfcvdmetals_mtry[[index]], test)
+  
+  cindexcvdmetals_mtry[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdmetals_mtry[[index]]$predicted)
+}
+
+cindexcvdmetals_mtry=unlist(cindexcvdmetals_mtry)
+
+cindexcvdmetals_mtry
+
+#6 is optimal (0.8241)
+
+###Now experimenting with nodesize using optimal ntree and mtry
+
+rfcvdmetals_nodesize=list()
+predrfcvdmetals_nodesize=list()
+cindexcvdmetals_nodesize=list()
+
+for(nodesize in c(1:20)){
+  index=toString(nodesize)
+  set.seed(56765)
+  rfcvdmetals_nodesize[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr, data=train, ntree=100, mtry=6, nodesize=nodesize)
+  
+  
+  predrfcvdmetals_nodesize[[index]]=predict.rfsrc(rfcvdmetals_nodesize[[index]], test)
+  
+  cindexcvdmetals_nodesize[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdmetals_nodesize[[index]]$predicted)
+}
+
+cindexcvdmetals_nodesize=unlist(cindexcvdmetals_nodesize)
+
+cindexcvdmetals_nodesize
+
+##14 is optimal(0.8262)
+
+#Finally, tuning nsplit
+
+rfcvdmetals_nsplit=list()
+predrfcvdmetals_nsplit=list()
+cindexcvdmetals_nsplit=list()
+
+for(nsplit in c(1:20)){
+  index=toString(nsplit)
+  set.seed(56765)
+  rfcvdmetals_nsplit[[index]]=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr, data=train, ntree=100, mtry=6, nodesize=14, nsplit=nsplit)
+  
+  predrfcvdmetals_nsplit[[index]]=predict.rfsrc(rfcvdmetals_nsplit[[index]], test)
+  
+  cindexcvdmetals_nsplit[[index]]=1-get.cindex(test$time, test$cvd_death, predrfcvdmetals_nsplit[[index]]$predicted)
+}
+
+cindexcvdmetals_nsplit=unlist(cindexcvdmetals_nsplit)
+
+cindexcvdmetals_nsplit
+
+#Try nsplit=0?
+set.seed(56765)
+rfcvdmetals_nsplit0=rfsrc(Surv(time, cvd_death) ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr, data=train, ntree=100, mtry=6, nodesize=14, nsplit=0)
+
+predrfcvdmetals_nsplit0=predict.rfsrc(rfcvdmetals_nsplit0, test)
+  
+cindexcvdmetals_nsplit0=1-get.cindex(test$time, test$cvd_death, predrfcvdmetals_nsplit0$predicted)
+
+cindexcvdmetals_nsplit0
+
+#10 is optimal (0.8262)
+
+#Now the hyperparameters have been tuned, let's create the optimal forest
+set.seed(56765)
+optimalrf_cvd_metals=rfsrc(Surv(time, cvd_death) ~ age + white + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + normal_weight + overweight + obese + hypertension + dm + urxucs + urxumo + lbxbpb + urxutl + urxuas+ urxuco + urxuba + urxupb + urxucd + lbxthg + urxuhg + lbxbcd + urxuur + urxudma + urxutu + urxusb + urxuab + urxucr, data=train, ntree=100, mtry=6, nodesize=14, nsplit=10)
+
+pred_optimalrf_cvd_metals=predict.rfsrc(optimalrf_cvd_metals, test)
+
+rf_cindex_cvd_metals=1-get.cindex(test$time, test$cvd_death, pred_optimalrf_cvd_metals$predicted)
+```
+
+## Comparison Table
+
+```{r}
+comparison_rf=matrix(nrow=2, ncol=1)
+comparison_rf[1,]=c(rf_cindex_cvd_trad)
+comparison_rf[2,]=c(rf_cindex_cvd_metals)
+
+colnames(comparison_rf)=c("C-index")
+rownames(comparison_rf)=c("Traditional Vars", "All Vars")
+
+comparison_rf = rbind(comparison_rf, comparison_rf[2])
+comparison_rf
+```
+
+
+#Figure for Presentation
+```{r}
+comparison_df = data.frame(cbind(comparison_CPHM, comparison_enet, comparison_rf))
+
+plot_df = comparison_df %>%
+  rownames_to_column() %>%
+  rename("CPHM" = C.index, "ENET" = C.index.1, "Survival_RF" = C.index.2, "Predictors" = rowname) %>%
+  pivot_longer(cols = c(CPHM, ENET, Survival_RF), names_to = "Model", values_to = "C.index")
+
+plot_df$Predictors = factor(plot_df$Predictors, levels = c("Traditional Vars", "All Vars (main effects)", "All Vars (with squared and interaction)"))
+
+ggplot(data = plot_df, aes(x = Predictors, y = C.index, color = Model, group = Model)) + geom_line(size = 1) + geom_point(size = 5)  + labs(y = "C-index")  + theme_bw(base_size = 18) + scale_x_discrete(labels = c("Traditional Predictors", "+ Metals main effects", "+ Metals squared and interaction")) + theme(axis.text = element_text(face = "bold")) + scale_color_discrete(name = "Model", labels = c("Cox Proportional Hazards Model", "Elastic-Net", "Survival Random Forest"))
+
+
+```

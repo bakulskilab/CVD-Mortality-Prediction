@@ -1,0 +1,220 @@
+---
+title: "CVD Mortality Prediction Descriptive"
+author: "Sam Fansler"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(survival)
+library(survminer)
+library(prodlim)
+library(pec)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(glmnet)
+library(randomForestSRC)
+library(ranger)
+library(gtsummary)
+library(forcats)
+library(webshot)
+library(formattable)
+library(reshape2)
+library(nricens)
+```
+
+# Histograms for metals in training set
+```{r}
+
+train_long=train %>%
+  pivot_longer(c(metals$chemicals, "urxucr"))
+
+
+ggplot(data=train_long, aes(x=value)) + geom_histogram() + facet_wrap(~name) + scale_x_continuous(limits = c(-10, 10))
+```
+
+# Histogram of age by race
+
+```{r}
+
+ggplot(data=data, aes(x=age, fill=race, group=race, colour=race)) + geom_histogram(position="identity")
+
+ggplot(data=data, aes(x=age, group=race, colour=race)) + geom_density()
+```
+
+# Correlation Heatmap for Metals
+```{r}
+cormat=round(cor(train[c(metals$chemicals, "urxucr")]), 2)
+
+get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+}
+upper_tri = get_upper_tri(cormat)
+
+upper_tri
+
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+
+ggheatmap=ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+ggheatmap + geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) 
+
+```
+
+
+
+# Descriptive Statistics - full data
+## Traditional Variables
+```{r}
+setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\Figures & Tables")
+
+desc_table_full=data %>%
+  select(c(age, white, black, hispanic, otherrace, male, currentsmk, sbp, lbxtc, hdl, normal_weight, overweight, obese, hypertension, dm, deathstat)) %>%
+  mutate(deathstat=factor(deathstat), deathstat=fct_recode(deathstat, "Survived"= "0", "CVD_Death"= "1", "Other_Death"= "2")) %>%
+  tbl_summary(
+    by=deathstat,
+    label=list(currentsmk="current smoker", lbxtc="total chol", hdl="hdl chol", dm="diabetes"),
+    statistic=list(all_continuous() ~ "{mean} ({sd})")
+  ) %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::gtsave(
+    filename = "Descriptive Full Data.pdf"
+  )
+
+```
+
+##Metals
+```{r}
+setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\Figures & Tables")
+desc_table_full_metals=data %>%
+  select(c(metals$chemicals, deathstat, urxucr)) %>%
+  mutate(deathstat=factor(deathstat), deathstat=fct_recode(deathstat, "Survived"= "0", "CVD_Death"= "1", "Other_Death"= "2")) %>%
+  tbl_summary(
+    by=deathstat,
+    statistic=list(all_continuous() ~ "{mean} ({sd})")
+  ) %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::gtsave(
+    filename = "Descriptive Full metals.pdf"
+  )
+
+desc_table_full_metals
+
+
+
+```
+# Descriptive Statistics - train and test datasets
+
+## Traditional Variables
+```{r}
+
+#Train
+setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\Figures & Tables")
+desc_table_train=train %>%
+  select(-c(metals$chemicals, "cvd_death", "all_death", "time", "urxucr")) %>%
+  mutate(deathstat=factor(deathstat), deathstat=fct_recode(deathstat, "Survived"= "0", "CVD_Death"= "1", "Other_Death"= "2")) %>%
+  tbl_summary(
+    by=deathstat,
+    label=list(currentsmk="current smoker", lbxtc="total chol", hdl="hdl chol", dm="diabetes"),
+    statistic=list(all_continuous() ~ "{mean} ({sd})")
+  ) %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::gtsave(
+    filename = "Descriptive Train.pdf"
+  )
+
+desc_table_train
+
+#Test
+setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\Figures & Tables")
+desc_table_test=test %>%
+  select(-c(metals$chemicals, "cvd_death", "all_death", "time", "urxucr")) %>%
+  mutate(deathstat=factor(deathstat), deathstat=fct_recode(deathstat, "Survived"= "0", "CVD_Death"= "1", "Other_Death"= "2")) %>%
+  tbl_summary(
+    by=deathstat,
+    label=list(currentsmk="current smoker", lbxtc="total chol", hdl="hdl chol", dm="diabetes"),
+    statistic=list(all_continuous() ~ "{mean} ({sd})")
+  ) %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::gtsave(
+    filename = "Descriptive Test.pdf"
+  )
+
+desc_table_test
+
+
+data=rowid_to_column(data)
+
+data$train=ifelse(data$rowid %in% rand, 1, 0)
+
+
+desc_table_new= data %>%
+  
+  select(c(age, white, black, hispanic, otherrace, male, currentsmk, sbp, lbxtc, hdl, normal_weight, overweight, obese, hypertension, dm, deathstat, train, cvd_death, all_death, time, metals$chemicals, urxucr)) %>%
+  mutate(train=factor(train), train=fct_recode(train, "Train"= "1", "Test"= "0")) %>%
+  tbl_summary(
+    by=train,
+    label=list(currentsmk="current smoker", lbxtc="total chol", hdl="hdl chol", dm="diabetes"),
+    statistic=list(all_continuous() ~ "{mean} ({sd})")
+  ) %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::gtsave(
+    filename = "Descriptive by Train/Test.pdf"
+  )
+  
+
+
+```
+
+## Metals
+```{r}
+setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\Figures & Tables")
+desc_table_train_metals=train %>%
+  select(c(metals$chemicals, "urxucr", "deathstat")) %>%
+  mutate(deathstat=factor(deathstat), deathstat=fct_recode(deathstat, "Survived"= "0", "CVD_Death"= "1", "Other_Death"= "2")) %>%
+  tbl_summary(
+    by=deathstat,
+    statistic=list(all_continuous() ~ "{mean} ({sd})")
+  ) %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::gtsave(
+    filename = "Descriptive Train metals.pdf"
+  )
+
+desc_table_train_metals
+
+
+
+setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\Figures & Tables")
+desc_table_test_metals=test %>%
+  select(c(metals$chemicals, "urxucr", "deathstat")) %>%
+  mutate(deathstat=factor(deathstat), deathstat=fct_recode(deathstat, "Survived"= "0", "CVD_Death"= "1", "Other_Death"= "2")) %>%
+  tbl_summary(
+    by=deathstat,
+    statistic=list(all_continuous() ~ "{mean} ({sd})")
+  ) %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::gtsave(
+    filename = "Descriptive Test metals.pdf"
+  )
+
+desc_table_test_metals
+```

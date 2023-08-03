@@ -1,0 +1,182 @@
+---
+title: "CVD Mortality Prediction Data Cleaning"
+author: "Sam Fansler"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(survival)
+library(survminer)
+library(prodlim)
+library(pec)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(glmnet)
+library(randomForestSRC)
+library(ranger)
+library(gtsummary)
+library(forcats)
+library(webshot)
+library(formattable)
+library(reshape2)
+library(nricens)
+
+setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\NHANES data")
+#Read the data
+data=read.csv("data_metal_selected_highdetection_9916.csv")
+metals=read.csv("metal_selected_detection.csv")
+
+```
+
+# Data Pre-Processing
+
+
+## Categorize bmi into 3 categories
+
+```{r}
+#Categorize bmi into categories (<25, 25-30, >30)
+
+data=data %>%
+  mutate(bmi=as.factor(ifelse(bmxbmi<25, 0, ifelse(bmxbmi>=25 & bmxbmi<30, 1, 2)))) %>%
+  mutate(normal_weight=ifelse(bmxbmi<25, 1, 0)) %>%
+  mutate(overweight=ifelse(bmxbmi>=25 & bmxbmi<30, 1, 0)) %>%
+  mutate(obese=ifelse(bmxbmi>=30, 1, 0))
+
+#Add non-CVD death outcome
+
+data=data %>%
+  mutate(deathstat=ifelse(all_death == 1, ifelse(cvd_death == 0, 2, 1), 0))
+
+#Impute missing creatinine values by mean
+ucrmean=mean(na.exclude(data$urxucr))
+
+data$urxucr[which(is.na(data$urxucr))]=ucrmean
+
+```
+
+## Split train and test
+```{r}
+
+#Subset the data into the traditional CVD risk factors and the outcomes (all_death, cvd_death)
+TraditionalVars=data[,c("age", "race", "white", "black", "hispanic", "otherrace", "male", "currentsmk", "sbp", "lbxtc", "hdl", "normal_weight", "bmi", "overweight", "obese", "hypertension", "dm", "all_death", "cvd_death", "deathstat", "time")]
+
+#Create a new subset that includes traditional CVD risk factors + metals
+AllVars=data[, c("age", "race", "white", "black", "hispanic", "otherrace", "male", "currentsmk", "sbp", "lbxtc", "hdl", "bmi", "normal_weight", "overweight", "obese", "hypertension", "dm", "all_death", "cvd_death", "deathstat", "time", metals$chemicals, "urxucr")]
+
+
+
+#Split the data into train and test datasets (50% and 50%)
+
+set.seed(56765)
+rand=sample(nrow(TraditionalVars), size=(nrow(TraditionalVars)*.5), replace=F)
+train=AllVars[rand,]
+test=AllVars[-rand,]
+
+```
+
+## Log-transform and standardizing
+```{r}
+#Log-transform the metals training data
+
+train[c(22:39)]=log(train[c(22:39)])
+test[c(22:39)]=log(test[c(22:39)])
+
+
+#Center and scale the training metals by mean and sd
+
+means=train %>%
+  summarize(across(c(22:39), mean))
+stdvs=train %>%
+  summarize(across(c(22:39), sd))
+ 
+train = train %>%
+  rowwise() %>%
+  mutate(
+    (across(22:39)-means)/stdvs
+  ) %>%
+  ungroup()
+
+
+#Center and scale the testing data using training data parameters
+ test = test %>%
+   rowwise() %>%
+   mutate(
+     (across(22:39)-means)/stdvs
+   ) %>%
+   ungroup()
+ 
+```
+
+
+## Covariate-adjusted standardization
+
+```{r}
+# First, fit a model for UCr
+mod.cr=lm(data=train, urxucr ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm)
+
+summary(mod.cr)
+
+#Get predicted values
+
+fit.mod.cr=predict(mod.cr)
+fit.mod.cr[1:10]
+
+#Exponentiate predicted values
+exp.fit = exp(fit.mod.cr)
+
+cratio = train$urxucr/exp.fit
+
+#Finally, standardize urinary metals with cratio
+urinary=metals$chemicals[-c(3, 10, 12)]
+
+train[urinary]=train[urinary]/cratio
+
+
+
+#Also for testing set
+
+mod.cr=lm(data=test, urxucr ~ age + black + hispanic + otherrace + male + currentsmk + sbp + lbxtc + hdl + overweight + obese + hypertension + dm)
+
+summary(mod.cr)
+
+#Get predicted values
+
+fit.mod.cr=predict(mod.cr)
+fit.mod.cr[1:10]
+
+#Exponentiate predicted values
+exp.fit = exp(fit.mod.cr)
+
+cratio = test$urxucr/exp.fit
+
+#Finally, standardize urinary metals with cratio
+urinary=metals$chemicals[-c(3, 10, 12)]
+
+test[urinary]=test[urinary]/cratio
+```
+
+
+## Chi-square test of proportions
+```{r}
+#Check proportion of cvd_death cases in train and test datasets, compare to combined dataset
+sum(train$cvd_death)/nrow(train) #0.0596
+sum(test$cvd_death)/nrow(test) #0.0590
+
+sum(data$cvd_death)/nrow(data) #0.0593
+
+#Chi-squared test for significant difference in any pair of these proportions
+
+#Train vs combined
+prop.test(x=c(sum(train$cvd_death), sum(data$cvd_death)), n=c(nrow(train), nrow(data))) #p-value = 0.987
+
+#Test vs combined
+prop.test(x=c(sum(test$cvd_death), sum(data$cvd_death)), n=c(nrow(test), nrow(data))) #p-value = 0.987
+
+#Train vs test
+prop.test(x=c(sum(train$cvd_death), sum(test$cvd_death)), n=c(nrow(train), nrow(test))) #p-value = 0.958
+
+###None of these proportions significantly differ
+```
