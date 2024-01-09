@@ -25,6 +25,16 @@ library(reshape2)
 library(nricens)
 ```
 
+# Read in cleaned data
+```{r}
+data = read.table("data_cvd_mortality.txt", sep = "\t")
+train = read.table("train_cvd_mortality.txt", sep = "\t")
+test = read.table("test_cvd_mortality.txt", sep = "\t")
+metals = read.csv("metal_selected_detection.csv")
+
+```
+
+
 # Histograms for metals in training set
 ```{r}
 
