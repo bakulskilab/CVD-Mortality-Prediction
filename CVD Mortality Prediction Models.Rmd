@@ -182,9 +182,10 @@ summary(cox_hypertension_cvd)
 cox_diabetes_cvd=coxph(Surv(time, cvd_death) ~ dm, data=train, x=T)
 
 summary(cox_diabetes_cvd)
+```
 
-#Metals
-
+## Individual assocations with metals
+```{r}
 cox_ucs_cvd=coxph(Surv(time, cvd_death) ~ urxucs, data=train, x=T)
 
 summary(cox_ucs_cvd)
