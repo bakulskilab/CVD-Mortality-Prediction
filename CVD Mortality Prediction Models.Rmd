@@ -29,7 +29,7 @@ library(CoxR2)
 # Read in cleaned data
 ```{r}
 
-setwd("C:\\Users\\samfa\\OneDrive - Umich\\Research\\SEAD\\CVD mortality prediction\\NHANES data")
+setwd("/Users/samfansler/Library/CloudStorage/OneDrive-JohnsHopkins/Research/Michigan")
 data = read.table("data_cvd_mortality.txt", sep = "\t")
 train = read.table("train_cvd_mortality.txt", sep = "\t")
 test = read.table("test_cvd_mortality.txt", sep = "\t")
